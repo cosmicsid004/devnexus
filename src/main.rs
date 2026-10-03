@@ -41,6 +41,8 @@ enum Command {
 enum Lang {
     Rust,
     Python,
+    JavaScript,
+    TypeScript
 }
 
 impl Lang {
@@ -48,6 +50,8 @@ impl Lang {
         match path.extension()?.to_str()? {
             "rs" => Some(Lang::Rust),
             "py" => Some(Lang::Python),
+            "js" => Some(Lang::JavaScript),
+            "ts" => Some(Lang::TypeScript),
             _ => None,
         }
     }
