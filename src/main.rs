@@ -1,10 +1,12 @@
-use std::collections::BTreeMap;
-use std::fmt::Debug;
+use std::fmt::{Debug};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
+
+mod rust_import;
+use std::collections::{BTreeMap, BTreeSet};
 
 // folders that we will never scan
 const SKIP_DIRS: &[&str] = &[
@@ -34,6 +36,10 @@ enum Command {
         // folder to scan
         #[arg(default_value = ".")]
         path: PathBuf,
+
+        // show every file:line where each crate is used
+        #[arg(short, long)]
+        verbose: bool,
     },
 }
 
@@ -88,11 +94,61 @@ fn scan(root: &Path) -> Result<BTreeMap<Lang, Vec<PathBuf>>> {
     Ok(found)
 }
 
+fn report_rust(files: &[PathBuf], verbose: bool) {
+    // crate name -> list of "file:line"
+    let mut uses: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut modules: BTreeSet<String> = BTreeSet::new();
+    let mut unparseable = 0;
+
+    for file in files {
+        let src = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("warning: can't read {}: {e}", file.display());
+                continue;
+            }
+        };
+
+        match rust_import::extract(&src) {
+            Ok(found) => {
+                for imp in found.imports {
+                    uses.entry(imp.name)
+                        .or_default()
+                        .push(format!("{}:{}", file.display(), imp.line));
+                }
+                modules.extend(found.modules);
+            }
+
+            Err(e) => {
+                unparseable += 1;
+                eprintln!("warning: can't parse {}: {e}", file.display());
+            }
+        }
+    }
+
+    println!("\nRust imports (first path segment)");
+    for (name, locations) in &uses {
+        println!("{name} ({}x)", locations.len());
+        if verbose {
+            for loc in locations {
+                println!("{loc}");
+            }
+        }
+    }
+
+    if !modules.is_empty() {
+        println!("\nLocal modules (mod foo;): {}", modules.iter().cloned().collect::<Vec<_>>().join(", "));
+    }
+    if unparseable > 0 {
+        println!("\n{unparseable} file(s) could not be parsed")
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Scan { path } => {
+        Command::Scan { path, verbose } => {
             let found = scan(&path)?;
             if found.is_empty() {
                 println!("No Rust or Python files found.")
@@ -100,6 +156,10 @@ fn main() -> Result<()> {
 
             for (lang, files) in &found {
                 println!("{:?}: {} files", lang, files.len());
+            }
+
+            if let Some(files) = found.get(&Lang::Rust) {
+                report_rust(files, verbose);
             }
         }
     }

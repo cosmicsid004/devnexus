@@ -7,3 +7,5 @@ edition = "2024"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 ignore = "0.4.33"
+proc-macro2 = {version = "1.0.107", features = ["span-locations"] }
+syn = { version = "3.0.6", features = ["full", "visit"] }
