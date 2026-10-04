@@ -1,5 +1,5 @@
 use syn::visit::Visit; // to walk the syntax tree
-use syn::{ ItemExternCrate, ItemMod, ItemUse, UseTree };
+use syn::{ ItemEnum, ItemExternCrate, ItemMod, ItemUse, UseTree };
 
 // RustImport { name: "serde", line: 1 }
 // RustImport { name: "tokio", line: 2 }
@@ -40,14 +40,19 @@ impl <'ast> Visit<'ast> for Collector {
         syn::visit::visit_item_extern_crate(self, node);
     }
 
+    // collecting module and enum names
     // ItemMod: Module declaration
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
-        // points to another file
-        if node.content.is_none() {
-            self.out.modules.push(node.ident.to_string());
-        }
-
+        // points to another file and inline mod foo { }
+        self.out.modules.push(node.ident.to_string());
         syn::visit::visit_item_mod(self, node);
+    }
+
+    // collecting: enum Direction { North, South }
+    fn visit_item_enum(&mut self, node: &'ast ItemEnum) {
+        // use Direction::* : is a local enum, not a crate
+        self.out.modules.push(node.ident.to_string());
+        syn::visit::visit_item_enum(self, node);
     }
 }
 

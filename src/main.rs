@@ -1,11 +1,13 @@
-use std::fmt::{Debug};
+use std::fmt::{Debug, format};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
 
-mod rust_import;
+mod cargo_manifest;
+mod classify;
+mod rust_imports;
 use std::collections::{BTreeMap, BTreeSet};
 
 // folders that we will never scan
@@ -94,10 +96,10 @@ fn scan(root: &Path) -> Result<BTreeMap<Lang, Vec<PathBuf>>> {
     Ok(found)
 }
 
-fn report_rust(files: &[PathBuf], verbose: bool) {
+fn report_rust(root: &Path, files: &[PathBuf], verbose: bool) {
     // crate name -> list of "file:line"
     let mut uses: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut modules: BTreeSet<String> = BTreeSet::new();
+    let mut local_names: BTreeSet<String> = BTreeSet::new();
     let mut unparseable = 0;
 
     for file in files {
@@ -109,14 +111,14 @@ fn report_rust(files: &[PathBuf], verbose: bool) {
             }
         };
 
-        match rust_import::extract(&src) {
+        match rust_imports::extract(&src) {
             Ok(found) => {
                 for imp in found.imports {
                     uses.entry(imp.name)
                         .or_default()
                         .push(format!("{}:{}", file.display(), imp.line));
                 }
-                modules.extend(found.modules);
+                local_names.extend(found.modules);
             }
 
             Err(e) => {
@@ -126,19 +128,62 @@ fn report_rust(files: &[PathBuf], verbose: bool) {
         }
     }
 
-    println!("\nRust imports (first path segment)");
-    for (name, locations) in &uses {
-        println!("{name} ({}x)", locations.len());
-        if verbose {
-            for loc in locations {
-                println!("{loc}");
+    // -- classify
+
+    let manifest = cargo_manifest::read(root);
+    let own = manifest.as_ref().and_then(|m| m.package_name.as_deref()); // current project name
+
+    let mut external: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let (mut std_n, mut local_n) = (0, 0);
+    for (name, locs) in uses {
+        match classify::classify(&name, &local_names, own) {
+            classify::Kind::Std => std_n += locs.len(),
+            classify::Kind::Local => local_n += locs.len(),
+            classify::Kind::External => {
+                external.insert(name, locs);
             }
         }
     }
 
-    if !modules.is_empty() {
-        println!("\nLocal modules (mod foo;): {}", modules.iter().cloned().collect::<Vec<_>>().join(", "));
+    println!("\nRust: {std_n} std imports, {local_n} local imports (ignored)");
+    println!("External crates used");
+    for (name, locs) in &external {
+        println!(" {name} ({}x)", locs.len());
+        if verbose {
+            for loc in locs {
+                println!(" {loc}");
+            }
+        }
     }
+
+    // diff against Cargo.toml
+    // compares the external crates actually imported in Rust code against the dependencies declared in Cargo.toml
+    match &manifest {
+        None => println!("\n No valid Cargo.toml in {}, skipping diff.", root.display()),
+        Some(m) => {
+            let missing: Vec<&String> = external.keys().filter(|n| !m.deps.contains(*n)).collect();
+            let unused: Vec<&String> = m.deps.iter().filter(|d| !external.contains_key(*d)).collect();
+
+            if missing.is_empty() && unused.is_empty() {
+                println!("\nCargo.toml matches the code");
+            }
+
+            if !missing.is_empty() {
+                println!("\nMissing from Cargo.toml (try `cargo add <name>`):");
+                for n in missing {
+                    println!(" + {n}")
+                }
+            }
+
+            if !unused.is_empty() {
+                println!("\nDeclared but never imported (possibly unused)");
+                for n in unused {
+                    println!(" - {n}")
+                }
+            }
+        }
+    }
+
     if unparseable > 0 {
         println!("\n{unparseable} file(s) could not be parsed")
     }
@@ -159,7 +204,7 @@ fn main() -> Result<()> {
             }
 
             if let Some(files) = found.get(&Lang::Rust) {
-                report_rust(files, verbose);
+                report_rust(&path, files, verbose);
             }
         }
     }
