@@ -16,19 +16,23 @@ pub struct PyImport {
 }
 
 struct Collector<'s> {
-    src: &'s str,
-    out: Vec<PyImport>,
-    optional_depth: u32,
-    typing_depth: u32,
+    src: &'s str, // acutual pyhton code 
+    out: Vec<PyImport>, // what we extraced from it
+    optional_depth: u32, // checks if we are in some try block
+    typing_depth: u32, // checks if we are in typechecking block like if(condition)
 } 
 
 impl<'s> Collector<'s> {
+
+    // module → imported module name
+    // offset → where the import occurred in the source
     fn push(&mut self, module: &str, offset: usize) {
-        let top = module.split('.').next().unwrap_or(module);
+        let top = module.split('.').next().unwrap_or(module); // only top level module
         if top.is_empty() {
             return;
         }
 
+        // gets the line nuber of the import statement
         // byte offset -> line number
         let line = self.src.as_bytes()[..offset]
             .iter()
@@ -44,12 +48,15 @@ impl<'s> Collector<'s> {
     }
 }
 
+// Collector knows how to visit Python AST nodes.
 impl<'a, 's> Visitor<'a> for Collector<'s> {
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
         match stmt {
             //import os, numpy as np
             Stmt::Import(node) => {
                 let offset = usize::from(node.range.start());
+
+                // if mutiple modules are imported in a single line
                 for alias in &node.names {
                     self.push(alias.name.as_str(), offset);
                 }
@@ -57,7 +64,7 @@ impl<'a, 's> Visitor<'a> for Collector<'s> {
 
             // from requests import get
             Stmt::ImportFrom(node) => {
-                // level > 0 means relative (`from . import x`)
+                // level > 0 means relative (`from . import x`) means its from the project only
                 if node.level == 0 {
                     if let Some(module) = &node.module {
                         self.push(module.as_str(), usize::from(node.range.start()));

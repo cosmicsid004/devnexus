@@ -1,0 +1,6 @@
+Pyhton ruff parser
+Module
+ ├── Import("numpy")
+ └── Expr(print(...))
+
+Visitor: The visitor pattern lets us walk through every AST node.
