@@ -8,5 +8,7 @@ anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 ignore = "0.4.33"
 proc-macro2 = {version = "1.0.107", features = ["span-locations"] }
+ruff_python_ast = "0.0.16"
+ruff_python_parser = "0.0.16"
 syn = { version = "3.0.6", features = ["full", "visit"] }
 toml = "1.1.6"

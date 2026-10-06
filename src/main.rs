@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
 
+mod python_imports;
 mod cargo_manifest;
 mod classify;
 mod rust_imports;
@@ -189,6 +190,63 @@ fn report_rust(root: &Path, files: &[PathBuf], verbose: bool) {
     }
 }
 
+fn report_python(files: &[PathBuf], verbose: bool) {
+    //module -> (locations, all_optional, all_typing_only)
+    struct Info {
+        locs: Vec<String>,
+        always_optional: bool,
+        always_typing: bool,
+    }
+    let mut uses: BTreeMap<String, Info> = BTreeMap::new();
+    let mut unparseable = 0;
+
+    for file in files {
+        let src = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("warning: can't read {}: {e}", file.display());
+                continue;
+            }
+        };
+
+        match python_imports::extract(&src) {
+            Ok(imports) => {
+                for imp in imports {
+                    let info = uses.entry(imp.name).or_insert(Info { locs: Vec::new(), always_optional: true, always_typing: true });
+                    info.locs.push(format!("{}:{}", file.display(), imp.line));
+                    // one non optional makes the module required
+                    info.always_optional &= imp.optional;
+                    info.always_typing &= imp.typing_only;
+                }
+            }
+            Err(e) => {
+                unparseable += 1;
+                eprintln!("warning: can't parse {}: {e}", file.display());
+            }
+        }
+    }
+
+    println!("\nPyhton imports (top-level modules, not yet classified):");
+    for (name, info) in &uses {
+        let tag = if info.always_typing {
+            " [typing only]"
+        } else if info.always_optional {
+            " [optional]"
+        } else {
+            ""
+        };
+        println!(" {name} ({}x){tag}", info.locs.len());
+        if verbose {
+            for loc in &info.locs {
+                println!(" {loc}")
+            }
+        }
+    }
+    if unparseable > 0 {
+        println!("\n{unparseable} Pyhton file(s) could not be parsed")
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -206,6 +264,10 @@ fn main() -> Result<()> {
             if let Some(files) = found.get(&Lang::Rust) {
                 report_rust(&path, files, verbose);
             }
+
+            if let Some(files) = found.get(&Lang::Python) {
+                report_python(files, verbose);
+            } 
         }
     }
 
