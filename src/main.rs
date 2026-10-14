@@ -1,15 +1,20 @@
-use std::fmt::{Debug, format};
+use core::str;
+use std::fmt::{Debug};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
 
+mod collect;
+mod pyhton_classify;
 mod python_imports;
 mod cargo_manifest;
 mod classify;
 mod rust_imports;
 use std::collections::{BTreeMap, BTreeSet};
+
+use collect::Findings;
 
 // folders that we will never scan
 const SKIP_DIRS: &[&str] = &[
@@ -97,153 +102,90 @@ fn scan(root: &Path) -> Result<BTreeMap<Lang, Vec<PathBuf>>> {
     Ok(found)
 }
 
-fn report_rust(root: &Path, files: &[PathBuf], verbose: bool) {
-    // crate name -> list of "file:line"
-    let mut uses: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut local_names: BTreeSet<String> = BTreeSet::new();
-    let mut unparseable = 0;
-
-    for file in files {
-        let src = match std::fs::read_to_string(file) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("warning: can't read {}: {e}", file.display());
-                continue;
-            }
-        };
-
-        match rust_imports::extract(&src) {
-            Ok(found) => {
-                for imp in found.imports {
-                    uses.entry(imp.name)
-                        .or_default()
-                        .push(format!("{}:{}", file.display(), imp.line));
-                }
-                local_names.extend(found.modules);
-            }
-
-            Err(e) => {
-                unparseable += 1;
-                eprintln!("warning: can't parse {}: {e}", file.display());
-            }
-        }
-    }
-
-    // -- classify
-
-    let manifest = cargo_manifest::read(root);
-    let own = manifest.as_ref().and_then(|m| m.package_name.as_deref()); // current project name
-
-    let mut external: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let (mut std_n, mut local_n) = (0, 0);
-    for (name, locs) in uses {
-        match classify::classify(&name, &local_names, own) {
-            classify::Kind::Std => std_n += locs.len(),
-            classify::Kind::Local => local_n += locs.len(),
-            classify::Kind::External => {
-                external.insert(name, locs);
-            }
-        }
-    }
-
-    println!("\nRust: {std_n} std imports, {local_n} local imports (ignored)");
-    println!("External crates used");
-    for (name, locs) in &external {
-        println!(" {name} ({}x)", locs.len());
-        if verbose {
-            for loc in locs {
-                println!(" {loc}");
-            }
-        }
-    }
-
-    // diff against Cargo.toml
-    // compares the external crates actually imported in Rust code against the dependencies declared in Cargo.toml
-    match &manifest {
-        None => println!("\n No valid Cargo.toml in {}, skipping diff.", root.display()),
-        Some(m) => {
-            let missing: Vec<&String> = external.keys().filter(|n| !m.deps.contains(*n)).collect();
-            let unused: Vec<&String> = m.deps.iter().filter(|d| !external.contains_key(*d)).collect();
-
-            if missing.is_empty() && unused.is_empty() {
-                println!("\nCargo.toml matches the code");
-            }
-
-            if !missing.is_empty() {
-                println!("\nMissing from Cargo.toml (try `cargo add <name>`):");
-                for n in missing {
-                    println!(" + {n}")
-                }
-            }
-
-            if !unused.is_empty() {
-                println!("\nDeclared but never imported (possibly unused)");
-                for n in unused {
-                    println!(" - {n}")
-                }
-            }
-        }
-    }
-
-    if unparseable > 0 {
-        println!("\n{unparseable} file(s) could not be parsed")
+fn print_locs(locs: &[String]) {
+    for loc in locs {
+        println!(" {loc}");
     }
 }
 
-fn report_python(files: &[PathBuf], verbose: bool) {
-    //module -> (locations, all_optional, all_typing_only)
-    struct Info {
-        locs: Vec<String>,
-        always_optional: bool,
-        always_typing: bool,
-    }
-    let mut uses: BTreeMap<String, Info> = BTreeMap::new();
-    let mut unparseable = 0;
-
-    for file in files {
-        let src = match std::fs::read_to_string(file) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("warning: can't read {}: {e}", file.display());
-                continue;
-            }
-        };
-
-        match python_imports::extract(&src) {
-            Ok(imports) => {
-                for imp in imports {
-                    let info = uses.entry(imp.name).or_insert(Info { locs: Vec::new(), always_optional: true, always_typing: true });
-                    info.locs.push(format!("{}:{}", file.display(), imp.line));
-                    // one non optional makes the module required
-                    info.always_optional &= imp.optional;
-                    info.always_typing &= imp.typing_only;
-                }
-            }
-            Err(e) => {
-                unparseable += 1;
-                eprintln!("warning: can't parse {}: {e}", file.display());
-            }
+fn print_rust(root: &Path, f: &Findings, verbose: bool) {
+    println!("\nRust: {} std imports, {} local imports (ignored)", f.std_n, f.local_n);
+    println!("External crates used:");
+    for dep in &f.external {
+        println!(" {} ({}x)", dep.name, dep.locs.len());
+        if verbose {
+            print_locs(&dep.locs);
         }
     }
 
-    println!("\nPyhton imports (top-level modules, not yet classified):");
-    for (name, info) in &uses {
-        let tag = if info.always_typing {
+    if !f.manifest_found {
+        println!("\nNo valid Crgo.toml in {}, skipping diff.", root.display());
+    } else {
+        let missing: Vec<&str> = f
+            .external
+            .iter()
+            .filter(|d| !d.declared)
+            .map(|d| d.name.as_str())
+            .collect();
+         let used: BTreeSet<&str> = f.external.iter().map(|d| d.name.as_str()).collect();
+         let unused: Vec<&String> = f.declared.iter().filter(|d| !used.contains(d.as_str())).collect();
+
+         if missing.is_empty() && unused.is_empty() {
+             println!("\nCargo.toml matches the code")
+         }
+         if !missing.is_empty() {
+             println!("\nMissing from Cargo.toml (try 'cargo add <name>):");
+             for n in missing {
+                 println!(" - {n}");
+             }
+         }
+         if !unused.is_empty() {
+             println!("\nDeclared but never imported (possibly unused):");
+             for n in unused {
+                 println!(" - {n}");
+             }
+         }
+    }
+
+    if f.unparseable > 0 {
+        println!("\n{} Rust file(s) could not be parsed", f.unparseable);
+    }
+}
+
+
+fn print_python(f: &Findings, verbose: bool) {
+    println!("\nPython: {} stdlib imports, {} local imports (ignored)", f.std_n, f.local_n);
+    println!("Third-party modules used: ");
+    let mut undeclared = 0;
+    for dep in &f.external {
+        let mark = if dep.declared {
+            "✓"
+        } else {
+            undeclared += 1;
+            "?"
+        };
+        let tag = if dep.typing_only {
             " [typing only]"
-        } else if info.always_optional {
+        } else if dep.optioinal {
             " [optional]"
         } else {
             ""
         };
-        println!(" {name} ({}x){tag}", info.locs.len());
+        println!(" {mark} {} ({}x){tag}", dep.name, dep.locs.len());
         if verbose {
-            for loc in &info.locs {
-                println!(" {loc}")
-            }
+            print_locs(&dep.locs);
         }
     }
-    if unparseable > 0 {
-        println!("\n{unparseable} Pyhton file(s) could not be parsed")
+
+    println!("\n ✓ = declared in requirements.txt / pyproject.toml");
+    if undeclared > 0 {
+        println!(" ? = not found by that name (may be declared under different under a different package name, e.g. cv2 -> opencv-python)");
+        if f.declared.is_empty() {
+            println!(" (no requirements.txt or pyptoject.toml dependencies found)");
+        }
+        if f.unparseable > 0 {
+            println!("\n{} Pyhton file(s) could not be parsed", f.unparseable);
+        }
     }
 }
 
@@ -262,11 +204,13 @@ fn main() -> Result<()> {
             }
 
             if let Some(files) = found.get(&Lang::Rust) {
-                report_rust(&path, files, verbose);
+                let findings = collect::collect_rust(&path, files);
+                print_rust(&path, &findings, verbose);
             }
 
             if let Some(files) = found.get(&Lang::Python) {
-                report_python(files, verbose);
+                let findings = collect::collect_python(&path, files);
+                print_python(&findings, verbose);
             } 
         }
     }
