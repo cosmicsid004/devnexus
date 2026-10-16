@@ -1,11 +1,14 @@
 use core::str;
 use std::fmt::{Debug};
 use std::path::{Path, PathBuf};
+use std::io::Write;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
 
+mod python_env;
+mod py_map;
 mod collect;
 mod pyhton_classify;
 mod python_imports;
@@ -49,6 +52,24 @@ enum Command {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    // Write requirements.txt, create a .venv ans install (Pyhton for now)
+    Init {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        // Show the plan without changinf anything
+        #[arg(long)]
+        dry_run: bool,
+
+        // Overwrite an existing requirements.txt
+        #[arg(long)]
+        force: bool,
+
+        // Skip the confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -179,7 +200,7 @@ fn print_python(f: &Findings, verbose: bool) {
 
     println!("\n ✓ = declared in requirements.txt / pyproject.toml");
     if undeclared > 0 {
-        println!(" ? = not found by that name (may be declared under different under a different package name, e.g. cv2 -> opencv-python)");
+        println!(" ? = not found by that name (may be declared under different package name, e.g. cv2 -> opencv-python)");
         if f.declared.is_empty() {
             println!(" (no requirements.txt or pyptoject.toml dependencies found)");
         }
@@ -187,6 +208,69 @@ fn print_python(f: &Findings, verbose: bool) {
             println!("\n{} Pyhton file(s) could not be parsed", f.unparseable);
         }
     }
+}
+
+fn confirm(prompt: &str) -> Result<bool> {
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes"))
+}
+
+fn init(root: &Path, dry_run: bool, force: bool, yes: bool) -> Result<()> {
+    let found = scan(root)?;
+    let Some(files) = found.get(&Lang::Python) else {
+        println!("No pyhton files found, nothing to do yet (JS and Rust support is coming).");
+        return Ok(());
+    };
+
+    let findings = collect::collect_python(root, files);
+    let pkgs = python_env::plan(&findings);
+    if pkgs.is_empty() {
+        println!("No third party Python packages needed");
+        return Ok(());
+    }
+
+    println!("Pyhton packages to install:");
+    for p in &pkgs {
+        if p.import_name != p.install_name {
+            println!(" {} (import {})", p.install_name, p.import_name);
+        } else {
+            println!(" {}", p.install_name);
+        }
+    }
+
+    if dry_run {
+        println!("\n(dry run) Would write requirements.txt, create .venv ans install. Nothing changed");
+        return Ok(());
+    } 
+    if !yes && !confirm("\nWrite requirements.txt, create .venv ans install these? [y/N] ")? {
+        println!("Cancelled");
+        return Ok(());
+    }
+
+    let req = python_env::write_requirements(root, &pkgs, force)?;
+    println!("Wrote {}", req.display());
+    let py = python_env::create_venv(root)?;
+    let failed = python_env::install(&py, &req, &pkgs);
+
+    println!();
+    if failed.is_empty() {
+        if cfg!(windows) {
+            println!("Done. Activate with {}\\.venv\\Scripts\\activate", root.display());
+        } else {
+            println!("Done. Activate with: source {} /.venv/bin/activate", root.display());
+        }
+    } else {
+        println!("Finished with {} failure(s):", failed.len());
+        for n in &failed {
+            println!(" x {n}");
+        }
+        println!("These may not be real PyPI package names. Check the mapping.")
+    }
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -213,6 +297,8 @@ fn main() -> Result<()> {
                 print_python(&findings, verbose);
             } 
         }
+
+        Command::Init { path, dry_run, force, yes } => init(&path, dry_run, force, yes)?,
     }
 
     Ok(())
