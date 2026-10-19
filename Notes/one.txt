@@ -1,0 +1,24 @@
+Attribute	            Purpose
+#[derive(Parser)]	    Generates code to parse CLI arguments into your struct
+#[derive(Subcommand)]	Generates code to parse CLI subcommands into your enum
+#[command(...)]	        Configures the CLI parser
+#[arg(...)]	            Configures an individual argument
+
+1. **Procedural Macros (`#[derive]`)**
+   - Automatically generate trait implementations or parsing code.
+   - Example: `#[derive(Parser)]`, `#[derive(Subcommand)]`.
+
+4. **`BTreeMap<Lang, Vec<PathBuf>>`**
+   - A sorted key-value map, similar to Java's `TreeMap`.
+   - Groups file paths by programming language.
+   - `entry().or_default().push()` creates a vector if needed and adds a path.
+
+5. **Ownership and Borrowing (`Path` vs `PathBuf`)**
+   - `&Path` is a borrowed path.
+   - `PathBuf` is an owned, modifiable path.
+   - `to_path_buf()` creates an owned copy of a borrowed path.
+
+6. **Iterators and Error Propagation**
+   - `Walk` provides directory entries through iteration.
+   - `for entry in walker` consumes the iterator.
+   - `entry?` propagates scanning errors to the caller.
