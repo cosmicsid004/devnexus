@@ -22,7 +22,7 @@ pub fn plan(f: &Findings) -> Vec<Package> {
         by_name.entry(install.to_lowercase()).or_insert(Package {
             import_name: dep.name.clone(),
             install_name: install, 
-            optional: dep.optioinal 
+            optional: dep.optional 
         });
     }
 

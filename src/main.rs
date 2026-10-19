@@ -7,6 +7,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
 
+mod node_env;
+mod js_imports;
 mod python_env;
 mod py_map;
 mod collect;
@@ -85,8 +87,8 @@ impl Lang {
         match path.extension()?.to_str()? {
             "rs" => Some(Lang::Rust),
             "py" => Some(Lang::Python),
-            "js" => Some(Lang::JavaScript),
-            "ts" => Some(Lang::TypeScript),
+            "js" | "jsx" | "mjs" | "cjs" => Some(Lang::JavaScript),
+            "ts" | "tsx" | "mts" | "cts" => Some(Lang::TypeScript),
             _ => None,
         }
     }
@@ -187,7 +189,7 @@ fn print_python(f: &Findings, verbose: bool) {
         };
         let tag = if dep.typing_only {
             " [typing only]"
-        } else if dep.optioinal {
+        } else if dep.optional {
             " [optional]"
         } else {
             ""
@@ -210,6 +212,35 @@ fn print_python(f: &Findings, verbose: bool) {
     }
 }
 
+/// JS and TS share npm packages, so we treat them as one group.
+fn js_files(found: &BTreeMap<Lang, Vec<PathBuf>>) -> Vec<PathBuf> {
+    [Lang::JavaScript, Lang::TypeScript]
+        .iter()
+        .filter_map(|l| found.get(l))
+        .flatten()
+        .cloned()
+        .collect()
+}
+
+fn print_js(f: &Findings, verbose: bool) {
+    println!(
+        "\nJS/TS: {} Node built-in imports, {} local imports (ignored)",
+        f.std_n, f.local_n
+    );
+    println!("npm packages used:");
+    for dep in &f.external {
+        let mark = if dep.declared { "✓" } else { "+" };
+        println!("  {mark} {} ({}x)", dep.name, dep.locs.len());
+        if verbose {
+            print_locs(&dep.locs);
+        }
+    }
+    println!("\n  ✓ = in package.json    + = missing (init will add it)");
+    if !f.manifest_found {
+        println!("  (no valid package.json found)");
+    }
+}
+
 fn confirm(prompt: &str) -> Result<bool> {
     print!("{prompt}");
     std::io::stdout().flush()?;
@@ -218,58 +249,94 @@ fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(line.trim(), "y" | "Y" | "yes"))
 }
 
+fn init_python(root: &Path, pkgs: &[python_env::Package], force: bool) -> Result<Vec<String>> {
+    let req = python_env::write_requirements(root, pkgs, force)?;
+    println!("Wrote {}", req.display());
+    let py = python_env::create_venv(root)?;
+    Ok(python_env::install(&py, &req, pkgs))
+}
+
+fn report_result(label: &str, result: Result<Vec<String>>) {
+    match result {
+        Ok(failed) if failed.is_empty() => println!("✓ {label}: done"),
+        Ok(failed) => {
+            println!("✗ {label}: {} package(s) failed to install:", failed.len());
+            for n in failed {
+                println!("    {n}");
+            }
+            println!("    (they may not be real package names, or may belong to someone else)");
+        }
+        Err(e) => println!("✗ {label}: {e:#}"),
+    }
+}
+
 fn init(root: &Path, dry_run: bool, force: bool, yes: bool) -> Result<()> {
     let found = scan(root)?;
-    let Some(files) = found.get(&Lang::Python) else {
-        println!("No pyhton files found, nothing to do yet (JS and Rust support is coming).");
-        return Ok(());
+
+    // 1. Decide what we'd do, without touching anything
+    let py_pkgs: Vec<python_env::Package> = match found.get(&Lang::Python) {
+        Some(files) => python_env::plan(&collect::collect_python(root, files)),
+        None => Vec::new(),
+    };
+    let js = js_files(&found);
+    let node_plan = if js.is_empty() {
+        None
+    } else {
+        let p = node_env::plan(root, &collect::collect_js(root, &js));
+        if p.is_empty() { None } else { Some(p) }
     };
 
-    let findings = collect::collect_python(root, files);
-    let pkgs = python_env::plan(&findings);
-    if pkgs.is_empty() {
-        println!("No third party Python packages needed");
+    if py_pkgs.is_empty() && node_plan.is_none() {
+        println!("Nothing to install. (Rust support is coming.)");
         return Ok(());
     }
 
-    println!("Pyhton packages to install:");
-    for p in &pkgs {
-        if p.import_name != p.install_name {
-            println!(" {} (import {})", p.install_name, p.import_name);
-        } else {
-            println!(" {}", p.install_name);
+    // 2. Show the plan
+    if !py_pkgs.is_empty() {
+        println!("Python packages (requirements.txt + .venv):");
+        for p in &py_pkgs {
+            if p.import_name != p.install_name {
+                println!("  {}  (import {})", p.install_name, p.import_name);
+            } else {
+                println!("  {}", p.install_name);
+            }
+        }
+    }
+    if let Some(p) = &node_plan {
+        println!("\nNode packages ({}):", p.pm.name());
+        for n in &p.add {
+            println!("  {n}");
+        }
+        if p.add.is_empty() {
+            println!("  (all already in package.json, will run `{} install`)", p.pm.name());
+        }
+        if !p.has_manifest {
+            println!("  (no package.json yet, one will be created)");
         }
     }
 
     if dry_run {
-        println!("\n(dry run) Would write requirements.txt, create .venv ans install. Nothing changed");
+        println!("\n(dry run) Nothing changed.");
         return Ok(());
-    } 
-    if !yes && !confirm("\nWrite requirements.txt, create .venv ans install these? [y/N] ")? {
-        println!("Cancelled");
+    }
+    if !yes && !confirm("\nProceed? [y/N] ")? {
+        println!("Cancelled.");
         return Ok(());
     }
 
-    let req = python_env::write_requirements(root, &pkgs, force)?;
-    println!("Wrote {}", req.display());
-    let py = python_env::create_venv(root)?;
-    let failed = python_env::install(&py, &req, &pkgs);
-
+    // 3. Do it. Each part reports on its own, so one failure doesn't block the other.
     println!();
-    if failed.is_empty() {
+    if !py_pkgs.is_empty() {
+        report_result("Python", init_python(root, &py_pkgs, force));
         if cfg!(windows) {
-            println!("Done. Activate with {}\\.venv\\Scripts\\activate", root.display());
+            println!("  activate: {}\\.venv\\Scripts\\activate", root.display());
         } else {
-            println!("Done. Activate with: source {} /.venv/bin/activate", root.display());
+            println!("  activate: source {}/.venv/bin/activate", root.display());
         }
-    } else {
-        println!("Finished with {} failure(s):", failed.len());
-        for n in &failed {
-            println!(" x {n}");
-        }
-        println!("These may not be real PyPI package names. Check the mapping.")
     }
-
+    if let Some(p) = &node_plan {
+        report_result("Node", node_env::install(root, p));
+    }
     Ok(())
 }
 
@@ -296,6 +363,12 @@ fn main() -> Result<()> {
                 let findings = collect::collect_python(&path, files);
                 print_python(&findings, verbose);
             } 
+
+            let js = js_files(&found);
+            if !js.is_empty() {
+                let findings = collect::collect_js(&path, &js);
+                print_js(&findings, verbose);
+            }
         }
 
         Command::Init { path, dry_run, force, yes } => init(&path, dry_run, force, yes)?,
