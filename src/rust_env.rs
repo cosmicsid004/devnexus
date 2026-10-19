@@ -64,5 +64,8 @@ pub fn add(root: &Path, names: &[String]) -> Vec<(String, bool)> {
     let declared = cargo_manifest::read(root)
         .map(|m| m.deps)
         .unwrap_or_default();
-    names.iter().map(|n| (n.clone(), declared.contains(n))).collect()
+    names
+        .iter()
+        .map(|n| (n.clone(), declared.contains(n)))
+        .collect()
 }

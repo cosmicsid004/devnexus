@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::collect::Findings;
 
@@ -105,11 +105,20 @@ fn run(pm: Pm, root: &Path, verb: &str, pkgs: &[String]) -> bool {
 /// parent project's file. Creating one here keeps everything in this folder.
 fn write_manifest(root: &Path) -> Result<()> {
     let dir = std::fs::canonicalize(root)?;
-    let raw = dir.file_name().and_then(|n| n.to_str()).unwrap_or("project");
+    let raw = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project");
     let cleaned: String = raw
         .to_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let name = cleaned.trim_matches('-');
     let name = if name.is_empty() { "project" } else { name };
@@ -127,7 +136,10 @@ fn write_manifest(root: &Path) -> Result<()> {
 pub fn install(root: &Path, plan: &Plan) -> Result<Vec<String>> {
     let pm = plan.pm;
     if !available(pm) {
-        bail!("{} not found. Install Node.js first (https://nodejs.org)", pm.name());
+        bail!(
+            "{} not found. Install Node.js first (https://nodejs.org)",
+            pm.name()
+        );
     }
     if !plan.has_manifest {
         write_manifest(root)?;
@@ -160,12 +172,19 @@ pub fn install(root: &Path, plan: &Plan) -> Result<Vec<String>> {
 /// Does node_modules/<name>/package.json exist? (No need for node itself.)
 pub fn verify(root: &Path, plan: &Plan) -> Vec<(String, bool)> {
     if plan.add.is_empty() {
-        return vec![("node_modules".to_string(), root.join("node_modules").is_dir())];
+        return vec![(
+            "node_modules".to_string(),
+            root.join("node_modules").is_dir(),
+        )];
     }
     plan.add
         .iter()
         .map(|n| {
-            let ok = root.join("node_modules").join(n).join("package.json").is_file();
+            let ok = root
+                .join("node_modules")
+                .join(n)
+                .join("package.json")
+                .is_file();
             (n.clone(), ok)
         })
         .collect()

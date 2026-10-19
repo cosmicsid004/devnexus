@@ -21,8 +21,8 @@ pub fn plan(f: &Findings) -> Vec<Package> {
         let install = py_map::install_name(&dep.name);
         by_name.entry(install.to_lowercase()).or_insert(Package {
             import_name: dep.name.clone(),
-            install_name: install, 
-            optional: dep.optional 
+            install_name: install,
+            optional: dep.optional,
         });
     }
 
@@ -45,11 +45,14 @@ pub fn requirements_text(pkgs: &[Package]) -> String {
 pub fn write_requirements(root: &Path, pkgs: &[Package], force: bool) -> Result<PathBuf> {
     let path = root.join("requirements.txt");
     if path.exists() && !force {
-        bail!("{} already exists. Re-run with --force to overwrite it.", path.display());
+        bail!(
+            "{} already exists. Re-run with --force to overwrite it.",
+            path.display()
+        );
     }
-    std::fs::write(&path, requirements_text(pkgs)) 
+    std::fs::write(&path, requirements_text(pkgs))
         .with_context(|| format!("could not write {}", path.display()))?;
-    
+
     Ok(path)
 }
 

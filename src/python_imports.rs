@@ -1,4 +1,4 @@
-use ruff_python_ast::visitor::{walk_stmt, Visitor};
+use ruff_python_ast::visitor::{Visitor, walk_stmt};
 use ruff_python_ast::{Expr, Stmt};
 use ruff_python_parser::parse_module;
 
@@ -16,14 +16,13 @@ pub struct PyImport {
 }
 
 struct Collector<'s> {
-    src: &'s str, // acutual pyhton code 
-    out: Vec<PyImport>, // what we extraced from it
+    src: &'s str,        // acutual pyhton code
+    out: Vec<PyImport>,  // what we extraced from it
     optional_depth: u32, // checks if we are in some try block
-    typing_depth: u32, // checks if we are in typechecking block like if(condition)
-} 
+    typing_depth: u32,   // checks if we are in typechecking block like if(condition)
+}
 
 impl<'s> Collector<'s> {
-
     // module → imported module name
     // offset → where the import occurred in the source
     fn push(&mut self, module: &str, offset: usize) {
@@ -37,13 +36,14 @@ impl<'s> Collector<'s> {
         let line = self.src.as_bytes()[..offset]
             .iter()
             .filter(|&&b| b == b'\n')
-            .count() + 1;
+            .count()
+            + 1;
 
-        self.out.push(PyImport { 
-            name: top.to_string(), 
-            line, 
-            optional: self.optional_depth > 0, 
-            typing_only: self.typing_depth > 0, 
+        self.out.push(PyImport {
+            name: top.to_string(),
+            line,
+            optional: self.optional_depth > 0,
+            typing_only: self.typing_depth > 0,
         });
     }
 }
@@ -94,7 +94,7 @@ impl<'a, 's> Visitor<'a> for Collector<'s> {
                 }
             }
 
-            // everything else 
+            // everything else
             _ => walk_stmt(self, stmt),
         }
     }

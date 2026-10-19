@@ -10,7 +10,7 @@ pub struct Manifest {
     pub deps: BTreeSet<String>,
 }
 
-// In Cargo.toml: serde-json 
+// In Cargo.toml: serde-json
 // In code: serde_json
 pub fn normalize(name: &str) -> String {
     name.replace('-', "_")

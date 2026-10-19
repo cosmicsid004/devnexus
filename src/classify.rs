@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 pub enum Kind {
     Std,
     Local,
-    External
+    External,
 }
 
 const STD_CRATES: &[&str] = &["std", "core", "alloc", "proc_macro", "test"];

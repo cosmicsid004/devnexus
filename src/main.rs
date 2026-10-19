@@ -1,22 +1,22 @@
 use core::str;
-use std::fmt::{Debug};
-use std::path::{Path, PathBuf};
+use std::fmt::Debug;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
 
-mod rust_env;
-mod node_env;
-mod js_imports;
-mod python_env;
-mod py_map;
-mod collect;
-mod pyhton_classify;
-mod python_imports;
 mod cargo_manifest;
 mod classify;
+mod collect;
+mod js_imports;
+mod node_env;
+mod py_map;
+mod python_classify;
+mod python_env;
+mod python_imports;
+mod rust_env;
 mod rust_imports;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,7 +72,7 @@ enum Command {
         // Skip the confirmation prompt
         #[arg(short, long)]
         yes: bool,
-    }
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -80,7 +80,7 @@ enum Lang {
     Rust,
     Python,
     JavaScript,
-    TypeScript
+    TypeScript,
 }
 
 impl Lang {
@@ -133,7 +133,10 @@ fn print_locs(locs: &[String]) {
 }
 
 fn print_rust(root: &Path, f: &Findings, verbose: bool) {
-    println!("\nRust: {} std imports, {} local imports (ignored)", f.std_n, f.local_n);
+    println!(
+        "\nRust: {} std imports, {} local imports (ignored)",
+        f.std_n, f.local_n
+    );
     println!("External crates used:");
     for dep in &f.external {
         println!(" {} ({}x)", dep.name, dep.locs.len());
@@ -151,24 +154,28 @@ fn print_rust(root: &Path, f: &Findings, verbose: bool) {
             .filter(|d| !d.declared)
             .map(|d| d.name.as_str())
             .collect();
-         let used: BTreeSet<&str> = f.external.iter().map(|d| d.name.as_str()).collect();
-         let unused: Vec<&String> = f.declared.iter().filter(|d| !used.contains(d.as_str())).collect();
+        let used: BTreeSet<&str> = f.external.iter().map(|d| d.name.as_str()).collect();
+        let unused: Vec<&String> = f
+            .declared
+            .iter()
+            .filter(|d| !used.contains(d.as_str()))
+            .collect();
 
-         if missing.is_empty() && unused.is_empty() {
-             println!("\nCargo.toml matches the code")
-         }
-         if !missing.is_empty() {
-             println!("\nMissing from Cargo.toml (try 'cargo add <name>):");
-             for n in missing {
-                 println!(" - {n}");
-             }
-         }
-         if !unused.is_empty() {
-             println!("\nDeclared but never imported (possibly unused):");
-             for n in unused {
-                 println!(" - {n}");
-             }
-         }
+        if missing.is_empty() && unused.is_empty() {
+            println!("\nCargo.toml matches the code")
+        }
+        if !missing.is_empty() {
+            println!("\nMissing from Cargo.toml (try 'cargo add <name>):");
+            for n in missing {
+                println!(" - {n}");
+            }
+        }
+        if !unused.is_empty() {
+            println!("\nDeclared but never imported (possibly unused):");
+            for n in unused {
+                println!(" - {n}");
+            }
+        }
     }
 
     if f.unparseable > 0 {
@@ -176,9 +183,11 @@ fn print_rust(root: &Path, f: &Findings, verbose: bool) {
     }
 }
 
-
 fn print_python(f: &Findings, verbose: bool) {
-    println!("\nPython: {} stdlib imports, {} local imports (ignored)", f.std_n, f.local_n);
+    println!(
+        "\nPython: {} stdlib imports, {} local imports (ignored)",
+        f.std_n, f.local_n
+    );
     println!("Third-party modules used: ");
     let mut undeclared = 0;
     for dep in &f.external {
@@ -203,7 +212,9 @@ fn print_python(f: &Findings, verbose: bool) {
 
     println!("\n ✓ = declared in requirements.txt / pyproject.toml");
     if undeclared > 0 {
-        println!(" ? = not found by that name (may be declared under different package name, e.g. cv2 -> opencv-python)");
+        println!(
+            " ? = not found by that name (may be declared under different package name, e.g. cv2 -> opencv-python)"
+        );
         if f.declared.is_empty() {
             println!(" (no requirements.txt or pyptoject.toml dependencies found)");
         }
@@ -270,12 +281,18 @@ fn report_result(label: &str, result: Result<Checks>) -> bool {
     match result {
         Ok(checks) => {
             let bad = checks.iter().filter(|(_, ok)| !ok).count();
-            println!("\n{label}: {}/{} verified", checks.len() - bad, checks.len());
+            println!(
+                "\n{label}: {}/{} verified",
+                checks.len() - bad,
+                checks.len()
+            );
             for (name, ok) in &checks {
                 println!("  {} {name}", if *ok { "✓" } else { "✗" });
             }
             if bad > 0 {
-                println!("  (✗ = not installed or not importable. The name may not be a real package.)");
+                println!(
+                    "  (✗ = not installed or not importable. The name may not be a real package.)"
+                );
             }
             bad == 0
         }
@@ -332,7 +349,10 @@ fn init(root: &Path, dry_run: bool, force: bool, yes: bool) -> Result<()> {
             println!("  {n}");
         }
         if p.add.is_empty() {
-            println!("  (all already in package.json, will run `{} install`)", p.pm.name());
+            println!(
+                "  (all already in package.json, will run `{} install`)",
+                p.pm.name()
+            );
         }
         if !p.has_manifest {
             println!("  (no package.json yet, one will be created)");
@@ -408,7 +428,7 @@ fn main() -> Result<()> {
             if let Some(files) = found.get(&Lang::Python) {
                 let findings = collect::collect_python(&path, files);
                 print_python(&findings, verbose);
-            } 
+            }
 
             let js = js_files(&found);
             if !js.is_empty() {
@@ -417,7 +437,12 @@ fn main() -> Result<()> {
             }
         }
 
-        Command::Init { path, dry_run, force, yes } => init(&path, dry_run, force, yes)?,
+        Command::Init {
+            path,
+            dry_run,
+            force,
+            yes,
+        } => init(&path, dry_run, force, yes)?,
     }
 
     Ok(())
