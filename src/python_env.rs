@@ -121,3 +121,23 @@ pub fn install(py: &Path, req: &Path, pkgs: &[Package]) -> Vec<String> {
 
     failed
 }
+
+/// Ask the venv's own Python whether each import works.
+pub fn verify(py: &Path, pkgs: &[Package]) -> Vec<(String, bool)> {
+    pkgs.iter()
+        .map(|p| {
+            let code = format!("import {}", p.import_name);
+            let ok = Command::new(py)
+                .args(["-c", code.as_str()])
+                .output() // captured silently, we only want pass/fail
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            let label = if p.import_name != p.install_name {
+                format!("{} (import {})", p.install_name, p.import_name)
+            } else {
+                p.install_name.clone()
+            };
+            (label, ok)
+        })
+        .collect()
+}

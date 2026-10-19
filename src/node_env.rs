@@ -156,3 +156,17 @@ pub fn install(root: &Path, plan: &Plan) -> Result<Vec<String>> {
     }
     Ok(failed)
 }
+
+/// Does node_modules/<name>/package.json exist? (No need for node itself.)
+pub fn verify(root: &Path, plan: &Plan) -> Vec<(String, bool)> {
+    if plan.add.is_empty() {
+        return vec![("node_modules".to_string(), root.join("node_modules").is_dir())];
+    }
+    plan.add
+        .iter()
+        .map(|n| {
+            let ok = root.join("node_modules").join(n).join("package.json").is_file();
+            (n.clone(), ok)
+        })
+        .collect()
+}

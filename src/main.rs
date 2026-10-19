@@ -3,10 +3,11 @@ use std::fmt::{Debug};
 use std::path::{Path, PathBuf};
 use std::io::Write;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use ignore::WalkBuilder;
 
+mod rust_env;
 mod node_env;
 mod js_imports;
 mod python_env;
@@ -249,24 +250,39 @@ fn confirm(prompt: &str) -> Result<bool> {
     Ok(matches!(line.trim(), "y" | "Y" | "yes"))
 }
 
-fn init_python(root: &Path, pkgs: &[python_env::Package], force: bool) -> Result<Vec<String>> {
+type Checks = Vec<(String, bool)>;
+
+fn init_python(root: &Path, pkgs: &[python_env::Package], force: bool) -> Result<Checks> {
     let req = python_env::write_requirements(root, pkgs, force)?;
     println!("Wrote {}", req.display());
     let py = python_env::create_venv(root)?;
-    Ok(python_env::install(&py, &req, pkgs))
+    python_env::install(&py, &req, pkgs);
+    Ok(python_env::verify(&py, pkgs))
 }
 
-fn report_result(label: &str, result: Result<Vec<String>>) {
+fn init_node(root: &Path, plan: &node_env::Plan) -> Result<Checks> {
+    node_env::install(root, plan)?;
+    Ok(node_env::verify(root, plan))
+}
+
+/// Prints ✓/✗ per item. Returns true if everything worked.
+fn report_result(label: &str, result: Result<Checks>) -> bool {
     match result {
-        Ok(failed) if failed.is_empty() => println!("✓ {label}: done"),
-        Ok(failed) => {
-            println!("✗ {label}: {} package(s) failed to install:", failed.len());
-            for n in failed {
-                println!("    {n}");
+        Ok(checks) => {
+            let bad = checks.iter().filter(|(_, ok)| !ok).count();
+            println!("\n{label}: {}/{} verified", checks.len() - bad, checks.len());
+            for (name, ok) in &checks {
+                println!("  {} {name}", if *ok { "✓" } else { "✗" });
             }
-            println!("    (they may not be real package names, or may belong to someone else)");
+            if bad > 0 {
+                println!("  (✗ = not installed or not importable. The name may not be a real package.)");
+            }
+            bad == 0
         }
-        Err(e) => println!("✗ {label}: {e:#}"),
+        Err(e) => {
+            println!("\n{label}: ✗ {e:#}");
+            false
+        }
     }
 }
 
@@ -285,9 +301,17 @@ fn init(root: &Path, dry_run: bool, force: bool, yes: bool) -> Result<()> {
         let p = node_env::plan(root, &collect::collect_js(root, &js));
         if p.is_empty() { None } else { Some(p) }
     };
+    let rust_plan = match found.get(&Lang::Rust) {
+        Some(files) => rust_env::plan(root, &collect::collect_rust(root, files)),
+        None => rust_env::Plan::Nothing,
+    };
 
-    if py_pkgs.is_empty() && node_plan.is_none() {
-        println!("Nothing to install. (Rust support is coming.)");
+    let rust_work = matches!(rust_plan, rust_env::Plan::Add(_));
+    if py_pkgs.is_empty() && node_plan.is_none() && !rust_work {
+        if let rust_env::Plan::Skip(why) = &rust_plan {
+            println!("Rust: skipped, {why}");
+        }
+        println!("Nothing to install.");
         return Ok(());
     }
 
@@ -314,6 +338,16 @@ fn init(root: &Path, dry_run: bool, force: bool, yes: bool) -> Result<()> {
             println!("  (no package.json yet, one will be created)");
         }
     }
+    match &rust_plan {
+        rust_env::Plan::Add(names) => {
+            println!("\nRust crates missing from Cargo.toml (cargo add):");
+            for n in names {
+                println!("  {n}");
+            }
+        }
+        rust_env::Plan::Skip(why) => println!("\nRust: skipped, {why}"),
+        rust_env::Plan::Nothing => {}
+    }
 
     if dry_run {
         println!("\n(dry run) Nothing changed.");
@@ -324,20 +358,32 @@ fn init(root: &Path, dry_run: bool, force: bool, yes: bool) -> Result<()> {
         return Ok(());
     }
 
-    // 3. Do it. Each part reports on its own, so one failure doesn't block the other.
-    println!();
+    // 3. Do it. Each part reports on its own, so one failure doesn't block the others.
+    let mut all_ok = true;
     if !py_pkgs.is_empty() {
-        report_result("Python", init_python(root, &py_pkgs, force));
-        if cfg!(windows) {
-            println!("  activate: {}\\.venv\\Scripts\\activate", root.display());
-        } else {
-            println!("  activate: source {}/.venv/bin/activate", root.display());
+        all_ok &= report_result("Python", init_python(root, &py_pkgs, force));
+        if root.join(".venv").exists() {
+            if cfg!(windows) {
+                println!("  activate: {}\\.venv\\Scripts\\activate", root.display());
+            } else {
+                println!("  activate: source {}/.venv/bin/activate", root.display());
+            }
         }
     }
     if let Some(p) = &node_plan {
-        report_result("Node", node_env::install(root, p));
+        all_ok &= report_result("Node", init_node(root, p));
     }
-    Ok(())
+    if let rust_env::Plan::Add(names) = &rust_plan {
+        all_ok &= report_result("Rust", Ok(rust_env::add(root, names)));
+    }
+
+    println!();
+    if all_ok {
+        println!("All done.");
+        Ok(())
+    } else {
+        bail!("some steps did not complete, see ✗ above")
+    }
 }
 
 fn main() -> Result<()> {
